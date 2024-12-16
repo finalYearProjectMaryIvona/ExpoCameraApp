@@ -1,7 +1,7 @@
 const { getDefaultConfig } = require('expo/metro-config');
 
-const config = getDefaultConfig(__dirname);
-
-config.resolver.assetExts.push('tflite', 'txt', 'jpeg');
-
-module.exports = config;
+module.exports = (() => {
+  const config = getDefaultConfig(__dirname);
+  config.resolver.assetExts.push('jpeg', 'jpg', 'png'); 
+  return config;
+})();
