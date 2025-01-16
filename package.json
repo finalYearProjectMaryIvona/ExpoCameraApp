@@ -9,7 +9,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "test": "jest --watchAll",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "eas-build-pre-install": "echo 'org.gradle.java.installations.auto-detect=false' >> ~/.gradle/gradle.properties && echo 'org.gradle.java.installations.paths=/usr/lib/jvm/java-11-openjdk-amd64' >> ~/.gradle/gradle.properties"
   },
   "jest": {
     "preset": "jest-expo"
@@ -23,7 +24,8 @@
     "@tensorflow-models/mobilenet": "^2.1.1",
     "@tensorflow/tfjs": "^4.22.0",
     "@tensorflow/tfjs-react-native": "^1.0.0",
-    "expo": "~52.0.17",
+    "expo": "^52.0.25",
+    "expo-asset": "^11.0.2",
     "expo-blur": "~14.0.1",
     "expo-camera": "~16.0.9",
     "expo-constants": "~17.0.3",
