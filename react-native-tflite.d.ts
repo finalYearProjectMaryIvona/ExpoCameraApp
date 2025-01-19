@@ -1,8 +1,8 @@
 declare module 'react-native-tflite' {
-    export default class TFLite {
+    export default class Tflite {
       loadModel(
         params: { model: string; labels: string },
-        callback: (error: any) => void
+        callback: (error: any, response: any) => void
       ): void;
   
       runModelOnImage(
@@ -15,6 +15,8 @@ declare module 'react-native-tflite' {
         },
         callback: (error: any, response: any) => void
       ): void;
+  
+      close(): void;
     }
   }
   

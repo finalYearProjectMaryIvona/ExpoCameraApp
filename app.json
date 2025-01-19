@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "camera",
-    "slug": "camera",
+    "name": "tflite-detect",
+    "slug": "tflite-detect",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -16,7 +16,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.marymcdonnell.camera"
+      "package": "com.marymcdonnell.tflitedetect"
     },
     "web": {
       "bundler": "metro",
@@ -33,7 +33,8 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
@@ -43,7 +44,7 @@
         "origin": false
       },
       "eas": {
-        "projectId": "b4aadc94-6489-415e-82a0-a645679b069c"
+        "projectId": "0b90b3c8-c35d-421b-a69a-532d231b1848"
       }
     }
   }

@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 export default function HomeScreen() {
   return (
     <View style={styles.container}>
-      <Button title="Go to TensorFlow Test" onPress={() => router.push('/tensorflow-test')} />
+      <Button title="Go to TensorFlow Lite Test" onPress={() => router.push('/onnx-test')} />
     </View>
   );
 }
