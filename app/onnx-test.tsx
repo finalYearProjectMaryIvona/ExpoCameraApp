@@ -44,27 +44,32 @@ const OnnxTest = () => {
   }, []);
 
   const preprocessImage = async (imageUri: string) => {
-    // Resize image to 224x224
+    // Resize image to 224x224 and convert to base64
     const resizedImage = await ImageManipulator.manipulateAsync(
       imageUri,
       [{ resize: { width: 224, height: 224 } }],
-      { base64: true }
+      { format: ImageManipulator.SaveFormat.PNG, base64: true }
     );
 
     const base64Data = resizedImage.base64;
-    const byteCharacters = atob(base64Data || '');
-    const byteNumbers = new Uint8Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    if (!base64Data) {
+      throw new Error('Failed to convert image to base64');
     }
 
-    return new Uint8Array(byteNumbers);
+    // Convert base64 to Unit8Array
+    const binaryString = atob(base64Data);
+    const imageData = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      imageData[i] = binaryString.charCodeAt(i);
+    }
+
+    return imageData;
   };
 
   const normalizeImage = (imageData: Uint8Array) => {
     const floatData = new Float32Array(imageData.length);
     for (let i = 0; i < imageData.length; i++) {
-      floatData[i] = imageData[i] / 255.0; // Normalize to [0, 1]
+      floatData[i] = imageData[i] / 255.0; 
     }
     return floatData;
   };
@@ -77,22 +82,27 @@ const OnnxTest = () => {
 
     try {
       // Preprocess the input image
-      const imageAsset = Asset.fromModule(require('./assets/images/car.jpeg'));
+      const imageAsset = Asset.fromModule(require('./assets/car.jpeg'));
       await imageAsset.downloadAsync();
       const resizedImageData = await preprocessImage(imageAsset.localUri || imageAsset.uri);
       const normalizedData = normalizeImage(resizedImageData);
+
+      // Verify tensor size
+      if (normalizedData.length !== 150528) {
+        throw new Error(`Tensor size mismatch: expected 150528, got ${normalizedData.length}`);
+      }
 
       // Create ONNX tensor
       const inputTensor = new Tensor('float32', normalizedData, [1, 3, 224, 224]);
 
       // Run inference
-      const feeds = { input: inputTensor };
+      const feeds = { [session.inputNames[0]]: inputTensor };
       const output = await session.run(feeds);
 
       // Process the output tensor
       console.log('Inference Output:', output);
-      const outputTensor = Object.values(output)[0]; // Adjust key as needed
-      const predictionsArray = Array.from(outputTensor.data as Float32Array); // Explicitly cast
+      const outputTensor = Object.values(output)[0]; 
+      const predictionsArray = Array.from(outputTensor.data as Float32Array); 
 
       // Convert predictions to strings and set them
       const formattedPredictions = predictionsArray.map((val) => val.toFixed(2));
