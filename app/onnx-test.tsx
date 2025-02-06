@@ -1,160 +1,241 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, Button, StyleSheet, Image } from 'react-native';
-import * as FileSystem from 'expo-file-system';
-import * as ImageManipulator from 'expo-image-manipulator';
-import { InferenceSession, Tensor } from 'onnxruntime-react-native';
-import { Asset } from 'expo-asset';
+import React, { useState, useEffect, useRef } from "react";
+import { StyleSheet, Text, TouchableOpacity, View, Dimensions } from "react-native";
+import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
+import { InferenceSession, Tensor } from "onnxruntime-react-native";
+import * as ImageManipulator from "expo-image-manipulator";
+import { Asset } from "expo-asset";
+import Svg, { Rect, Text as SvgText } from 'react-native-svg';
 
-const OnnxTest = () => {
+const CLASSES: string[] = [ /* Class names remain the same */ ];
+const COLORS = ['#FF3B30', '#34C759', '#007AFF', '#5856D6', '#FF9500'];
+
+interface Detection {
+  class: number;
+  confidence: number;
+  bbox: number[];
+}
+
+export default function App() {
+  const [facing, setFacing] = useState<CameraType>("back");
+  const [permission, requestPermission] = useCameraPermissions();
   const [session, setSession] = useState<InferenceSession | null>(null);
-  const [predictions, setPredictions] = useState<string[]>([]);
-  const [isModelLoaded, setIsModelLoaded] = useState(false);
+  const [detections, setDetections] = useState<Detection[]>([]);
+  const [modelLoading, setModelLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const cameraRef = useRef<any>(null);
 
   useEffect(() => {
-    const loadModel = async () => {
-      try {
-        console.log('Initializing ONNX Runtime...');
-
-        // Load the ONNX model asset
-        const modelAsset = Asset.fromModule(require('./assets/mobilenetv2-7.onnx'));
-        await modelAsset.downloadAsync();
-
-        const modelUri = modelAsset.localUri || modelAsset.uri;
-        console.log('Resolved Model URI:', modelUri);
-
-        const fileInfo = await FileSystem.getInfoAsync(modelUri);
-        if (!fileInfo.exists) {
-          throw new Error(`Model file not found at ${modelUri}`);
-        }
-
-        console.log('Model Asset:', modelAsset);
-        console.log('File Info:', fileInfo);
-
-        // Load model file into ONNX Runtime
-        const session = await InferenceSession.create(modelUri);
-        setSession(session);
-        console.log('Model loaded successfully');
-        setIsModelLoaded(true);
-      } catch (error) {
-        console.error('Error during ONNX initialization:', error);
-      }
-    };
-
     loadModel();
   }, []);
 
-  const preprocessImage = async (imageUri: string) => {
-    // Resize image to 224x224 and convert to base64
-    const resizedImage = await ImageManipulator.manipulateAsync(
-      imageUri,
-      [{ resize: { width: 224, height: 224 } }],
-      { format: ImageManipulator.SaveFormat.PNG, base64: true }
+  const loadModel = async () => {
+    try {
+      console.log("Loading YOLO model...");
+      const modelAsset = Asset.fromModule(require("./assets/yolov8n.onnx")); // Use the raw model
+      await modelAsset.downloadAsync();
+      const session = await InferenceSession.create(modelAsset.localUri || modelAsset.uri);
+      console.log("Model loaded successfully");
+      setSession(session);
+      setModelLoading(false);
+    } catch (err) {
+      console.error("Failed to load model:", err);
+      setError("Failed to load model");
+      setModelLoading(false);
+    }
+  };
+
+  const preprocessImage = async (uri: string): Promise<Tensor> => {
+    const resized = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 640, height: 640 } }],
+      { base64: true }
     );
 
-    const base64Data = resizedImage.base64;
-    if (!base64Data) {
-      throw new Error('Failed to convert image to base64');
-    }
+    if (!resized.base64) throw new Error("Failed to process image");
 
-    // Convert base64 to Unit8Array
-    const binaryString = atob(base64Data);
-    const imageData = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      imageData[i] = binaryString.charCodeAt(i);
-    }
-
-    return imageData;
-  };
-
-  const normalizeImage = (imageData: Uint8Array) => {
-    const floatData = new Float32Array(imageData.length);
+    const imageData = atob(resized.base64);
+    const buffer = new Uint8Array(imageData.length);
     for (let i = 0; i < imageData.length; i++) {
-      floatData[i] = imageData[i] / 255.0; 
+      buffer[i] = imageData.charCodeAt(i);
     }
-    return floatData;
+
+    const tensorData = new Float32Array(3 * 640 * 640);
+    for (let i = 0; i < buffer.length; i += 3) {
+      const r = buffer[i] / 255.0;
+      const g = buffer[i + 1] / 255.0;
+      const b = buffer[i + 2] / 255.0;
+
+      const pixelIndex = Math.floor(i / 3);
+      const row = Math.floor(pixelIndex / 640);
+      const col = pixelIndex % 640;
+
+      tensorData[row * 640 + col] = r;
+      tensorData[640 * 640 + row * 640 + col] = g;
+      tensorData[2 * 640 * 640 + row * 640 + col] = b;
+    }
+
+    return new Tensor("float32", tensorData, [1, 3, 640, 640]);
   };
 
-  const runInference = async () => {
-    if (!session) {
-      console.error('ONNX Session is not loaded.');
-      return;
-    }
-
+  const runDetection = async () => {
+    if (!session || !cameraRef.current || isProcessing) return;
     try {
-      // Preprocess the input image
-      const imageAsset = Asset.fromModule(require('./assets/car.jpeg'));
-      await imageAsset.downloadAsync();
-      const resizedImageData = await preprocessImage(imageAsset.localUri || imageAsset.uri);
-      const normalizedData = normalizeImage(resizedImageData);
+      setIsProcessing(true);
+      setError(null);
+      const photo = await cameraRef.current.takePictureAsync({ quality: 1, base64: true, skipProcessing: true });
+      const inputTensor = await preprocessImage(photo.uri);
 
-      // Verify tensor size
-      if (normalizedData.length !== 150528) {
-        throw new Error(`Tensor size mismatch: expected 150528, got ${normalizedData.length}`);
-      }
-
-      // Create ONNX tensor
-      const inputTensor = new Tensor('float32', normalizedData, [1, 3, 224, 224]);
-
-      // Run inference
-      const feeds = { [session.inputNames[0]]: inputTensor };
-      const output = await session.run(feeds);
-
-      // Process the output tensor
-      console.log('Inference Output:', output);
-      const outputTensor = Object.values(output)[0]; 
-      const predictionsArray = Array.from(outputTensor.data as Float32Array); 
-
-      // Convert predictions to strings and set them
-      const formattedPredictions = predictionsArray.map((val) => val.toFixed(2));
-      setPredictions(formattedPredictions);
-    } catch (error) {
-      console.error('Error during inference:', error);
+      const results = await session.run({ images: inputTensor });
+      const output = results.output0.data as Float32Array;
+      let detections = processDetections(output, [...results.output0.dims]);
+      setDetections(detections);
+    } catch (err) {
+      console.error("Detection failed:", err);
+      setError("Detection failed");
+    } finally {
+      setIsProcessing(false);
     }
   };
+
+  const processDetections = (output: Float32Array, dims: number[]) => {
+    const [batch_size, num_values, num_boxes] = dims;
+    let detections: Detection[] = [];
+    for (let i = 0; i < num_boxes; i++) {
+      const x1 = output[i * 4];
+      const y1 = output[i * 4 + 1];
+      const x2 = output[i * 4 + 2];
+      const y2 = output[i * 4 + 3];
+      const confidence = output[i * 5 + 4];
+      const classId = output[i * 6 + 5];
+      if (confidence > 0.5) {
+        detections.push({ bbox: [x1, y1, x2, y2], confidence, class: classId });
+      }
+    }
+    return detections;
+  };
+
+  const renderBoxes = () => {
+    const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
+
+    return (
+      <Svg style={StyleSheet.absoluteFill}>
+        {detections.map((det, idx) => {
+          const [x1, y1, x2, y2] = det.bbox;
+          const color = COLORS[idx % COLORS.length];
+          const boxX = x1 * screenWidth;
+          const boxY = y1 * screenHeight;
+          const boxWidth = (x2 - x1) * screenWidth;
+          const boxHeight = (y2 - y1) * screenHeight;
+
+          return (
+            <React.Fragment key={idx}>
+              <Rect
+                x={boxX}
+                y={boxY}
+                width={boxWidth}
+                height={boxHeight}
+                strokeWidth={2}
+                stroke={color}
+                fill="none"
+              />
+              <SvgText
+                x={boxX}
+                y={boxY - 5}
+                fill={color}
+                fontSize="14"
+                fontWeight="bold"
+              >
+                {`${CLASSES[det.class]} ${(det.confidence * 100).toFixed(0)}%`}
+              </SvgText>
+            </React.Fragment>
+          );
+        })}
+      </Svg>
+    );
+  };
+
+  if (!permission?.granted) {
+    return (
+      <View style={styles.container}>
+        <TouchableOpacity onPress={requestPermission}>
+          <Text style={styles.text}>Grant Camera Permission</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>ONNX Object Detection</Text>
-      <Image source={require('./assets/car.jpeg')} style={styles.image} />
-      <Button
-        title={isModelLoaded ? 'Run Detection' : 'Loading Model...'}
-        onPress={runInference}
-        disabled={!isModelLoaded}
-      />
-      <View style={styles.results}>
-        {predictions.length > 0 ? (
-          predictions.map((p, idx) => (
-            <Text key={idx}>{p}</Text>
-          ))
-        ) : (
-          <Text>No objects detected yet.</Text>
-        )}
-      </View>
+      {modelLoading ? (
+        <Text style={styles.text}>Loading model...</Text>
+      ) : (
+        <>
+          <CameraView style={styles.camera} facing={facing} ref={cameraRef} />
+          {renderBoxes()}
+          <View style={styles.controls}>
+            <TouchableOpacity style={styles.button} onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')}>
+              <Text style={styles.buttonText}>Flip</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.button, isProcessing && styles.buttonDisabled]} onPress={runDetection} disabled={isProcessing}>
+              <Text style={styles.buttonText}>{isProcessing ? 'Processing...' : 'Detect'}</Text>
+            </TouchableOpacity>
+          </View>
+          {error && <Text style={styles.error}>{error}</Text>}
+        </>
+      )}
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: 'black',
+  },
+  camera: {
+    flex: 1,
+  },
+  controls: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     padding: 20,
-    backgroundColor: '#f9f9f9',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
-  title: {
-    fontSize: 20,
+  button: {
+    backgroundColor: '#4CAF50',
+    padding: 15,
+    borderRadius: 30,
+    width: 100,
+    alignItems: 'center',
+  },
+  buttonDisabled: {
+    backgroundColor: '#888888',
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 16,
     fontWeight: 'bold',
-    marginBottom: 20,
   },
-  image: {
-    width: 300,
-    height: 200,
-    marginVertical: 10,
+  text: {
+    color: 'white',
+    fontSize: 18,
+    textAlign: 'center',
+    margin: 20,
   },
-  results: {
-    marginTop: 20,
-  },
+  error: {
+    position: 'absolute',
+    top: 20,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(255,0,0,0.7)',
+    padding: 10,
+    borderRadius: 5,
+    color: 'white',
+    textAlign: 'center',
+  }
 });
-
-export default OnnxTest;
