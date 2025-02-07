@@ -6,7 +6,21 @@ import * as ImageManipulator from "expo-image-manipulator";
 import { Asset } from "expo-asset";
 import Svg, { Rect, Text as SvgText } from 'react-native-svg';
 
-const CLASSES: string[] = [ /* Class names remain the same */ ];
+const CLASSES = [
+  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
+  'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
+  'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
+  'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+  'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+  'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
+  'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+  'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+  'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+  'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+  'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
+  'toothbrush'
+];
+
 const COLORS = ['#FF3B30', '#34C759', '#007AFF', '#5856D6', '#FF9500'];
 
 interface Detection {
@@ -33,12 +47,12 @@ export default function App() {
   const loadModel = async () => {
     try {
       console.log("Loading YOLO model...");
-      const modelAsset = Asset.fromModule(require("./assets/yolov8n.onnx")); // Use the raw model
+      const modelAsset = Asset.fromModule(require("./assets/yolov8n_with_pre_post_processing.onnx"));
       await modelAsset.downloadAsync();
       const session = await InferenceSession.create(modelAsset.localUri || modelAsset.uri);
-      console.log("Model loaded successfully");
       setSession(session);
       setModelLoading(false);
+      console.log("Model loaded successfully");
     } catch (err) {
       console.error("Failed to load model:", err);
       setError("Failed to load model");
@@ -46,74 +60,89 @@ export default function App() {
     }
   };
 
-  const preprocessImage = async (uri: string): Promise<Tensor> => {
-    const resized = await ImageManipulator.manipulateAsync(
-      uri,
-      [{ resize: { width: 640, height: 640 } }],
-      { base64: true }
-    );
-
-    if (!resized.base64) throw new Error("Failed to process image");
-
-    const imageData = atob(resized.base64);
-    const buffer = new Uint8Array(imageData.length);
-    for (let i = 0; i < imageData.length; i++) {
-      buffer[i] = imageData.charCodeAt(i);
-    }
-
-    const tensorData = new Float32Array(3 * 640 * 640);
-    for (let i = 0; i < buffer.length; i += 3) {
-      const r = buffer[i] / 255.0;
-      const g = buffer[i + 1] / 255.0;
-      const b = buffer[i + 2] / 255.0;
-
-      const pixelIndex = Math.floor(i / 3);
-      const row = Math.floor(pixelIndex / 640);
-      const col = pixelIndex % 640;
-
-      tensorData[row * 640 + col] = r;
-      tensorData[640 * 640 + row * 640 + col] = g;
-      tensorData[2 * 640 * 640 + row * 640 + col] = b;
-    }
-
-    return new Tensor("float32", tensorData, [1, 3, 640, 640]);
-  };
-
   const runDetection = async () => {
     if (!session || !cameraRef.current || isProcessing) return;
+
     try {
       setIsProcessing(true);
       setError(null);
-      const photo = await cameraRef.current.takePictureAsync({ quality: 1, base64: true, skipProcessing: true });
-      const inputTensor = await preprocessImage(photo.uri);
 
-      const results = await session.run({ images: inputTensor });
+      // Capture photo
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 1,
+        base64: true,
+        skipProcessing: true
+      });
+
+      // Resize image to a reasonable size first
+      const resized = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 640, height: 640 } }],
+        { format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+
+      if (!resized.base64) throw new Error("Failed to process image");
+
+      // Convert base64 to byte array
+      const imageData = atob(resized.base64);
+      const imageBytes = new Uint8Array(imageData.length);
+      for (let i = 0; i < imageData.length; i++) {
+        imageBytes[i] = imageData.charCodeAt(i);
+      }
+
+      // Create input tensor with correct shape for image
+      const inputTensor = new Tensor(
+        "uint8",
+        imageBytes,
+        [1, imageBytes.length]  // Add batch dimension
+      );
+
+      // Run inference with the preprocessed model
+      const results = await session.run({
+        "image": inputTensor
+      });
+
+      if (!results.output0?.data) {
+        throw new Error("No detection results");
+      }
+
+      // Process detection boxes
       const output = results.output0.data as Float32Array;
-      let detections = processDetections(output, [...results.output0.dims]);
+      const detections: Detection[] = [];
+
+      // Each detection has format [x1, y1, x2, y2, score, class_id]
+      const valuesPerBox = 6;  // 4 coords + score + class_id
+      const numDetections = output.length / valuesPerBox;
+
+      for (let i = 0; i < numDetections; i++) {
+        const offset = i * valuesPerBox;
+        const confidence = output[offset + 4];
+        const classId = Math.floor(output[offset + 5]);
+        
+        // Skip if invalid class
+        if (classId < 0 || classId >= CLASSES.length) continue;
+
+        detections.push({
+          bbox: [
+            output[offset],     // x1 (already normalized)
+            output[offset + 1], // y1
+            output[offset + 2], // x2
+            output[offset + 3]  // y2
+          ],
+          confidence: confidence,
+          class: classId
+        });
+      }
+
+      console.log(`Found ${detections.length} objects`);
       setDetections(detections);
+
     } catch (err) {
       console.error("Detection failed:", err);
-      setError("Detection failed");
+      setError("Detection failed: " + (err as Error).message);
     } finally {
       setIsProcessing(false);
     }
-  };
-
-  const processDetections = (output: Float32Array, dims: number[]) => {
-    const [batch_size, num_values, num_boxes] = dims;
-    let detections: Detection[] = [];
-    for (let i = 0; i < num_boxes; i++) {
-      const x1 = output[i * 4];
-      const y1 = output[i * 4 + 1];
-      const x2 = output[i * 4 + 2];
-      const y2 = output[i * 4 + 3];
-      const confidence = output[i * 5 + 4];
-      const classId = output[i * 6 + 5];
-      if (confidence > 0.5) {
-        detections.push({ bbox: [x1, y1, x2, y2], confidence, class: classId });
-      }
-    }
-    return detections;
   };
 
   const renderBoxes = () => {
@@ -124,6 +153,8 @@ export default function App() {
         {detections.map((det, idx) => {
           const [x1, y1, x2, y2] = det.bbox;
           const color = COLORS[idx % COLORS.length];
+          
+          // Convert normalized coordinates to screen space
           const boxX = x1 * screenWidth;
           const boxY = y1 * screenHeight;
           const boxWidth = (x2 - x1) * screenWidth;
@@ -172,17 +203,32 @@ export default function App() {
         <Text style={styles.text}>Loading model...</Text>
       ) : (
         <>
-          <CameraView style={styles.camera} facing={facing} ref={cameraRef} />
+          <CameraView
+            style={styles.camera}
+            facing={facing}
+            ref={cameraRef}
+          />
           {renderBoxes()}
           <View style={styles.controls}>
-            <TouchableOpacity style={styles.button} onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')}>
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')}
+            >
               <Text style={styles.buttonText}>Flip</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.button, isProcessing && styles.buttonDisabled]} onPress={runDetection} disabled={isProcessing}>
-              <Text style={styles.buttonText}>{isProcessing ? 'Processing...' : 'Detect'}</Text>
+            <TouchableOpacity
+              style={[styles.button, isProcessing && styles.buttonDisabled]}
+              onPress={runDetection}
+              disabled={isProcessing}
+            >
+              <Text style={styles.buttonText}>
+                {isProcessing ? 'Processing...' : 'Detect'}
+              </Text>
             </TouchableOpacity>
           </View>
-          {error && <Text style={styles.error}>{error}</Text>}
+          {error && (
+            <Text style={styles.error}>{error}</Text>
+          )}
         </>
       )}
     </View>
